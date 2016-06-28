@@ -67,7 +67,6 @@ public class BoxFile extends BoxItem {
     private static final String ENTERPRISE_METADATA_SCOPE = "enterprise";
     private static final int BUFFER_SIZE = 8192;
 
-
     /**
      * Constructs a BoxFile for a file with a given ID.
      * @param  api the API connection to be used by the file.
@@ -75,6 +74,16 @@ public class BoxFile extends BoxItem {
      */
     public BoxFile(BoxAPIConnection api, String id) {
         super(api, id);
+    }
+
+    /**
+     * Constructs a BoxFile for a file with a given ID.
+     * @param  api the API connection to be used by the file.
+     * @param  id  the ID of the file.
+     * @param  localEtag  the local etag of the file.
+     */
+    public BoxFile(BoxAPIConnection api, String id, String localEtag) {
+        super(api, id, localEtag);
     }
 
     @Override
@@ -289,6 +298,7 @@ public class BoxFile extends BoxItem {
     public void delete() {
         URL url = FILE_URL_TEMPLATE.build(this.getAPI().getBaseURL(), this.getID());
         BoxAPIRequest request = new BoxAPIRequest(this.getAPI(), url, "DELETE");
+        request = this.addETagHeader(request, "If-Match");
         BoxAPIResponse response = request.send();
         response.disconnect();
     }
@@ -302,6 +312,7 @@ public class BoxFile extends BoxItem {
     public BoxItem.Info move(BoxFolder destination, String newName) {
         URL url = FILE_URL_TEMPLATE.build(this.getAPI().getBaseURL(), this.getID());
         BoxJSONRequest request = new BoxJSONRequest(this.getAPI(), url, "PUT");
+        request = this.addETagHeader(request, "If-Match");
 
         JsonObject parent = new JsonObject();
         parent.add("id", destination.getID());
@@ -315,7 +326,9 @@ public class BoxFile extends BoxItem {
         request.setBody(updateInfo.toString());
         BoxJSONResponse response = (BoxJSONResponse) request.send();
         JsonObject responseJSON = JsonObject.readFrom(response.getJSON());
+        this.setEtag(responseJSON.get("etag").asString());
         BoxFile movedFile = new BoxFile(this.getAPI(), responseJSON.get("id").asString());
+
         return movedFile.new Info(responseJSON);
     }
 
@@ -326,31 +339,45 @@ public class BoxFile extends BoxItem {
     public void rename(String newName) {
         URL url = FILE_URL_TEMPLATE.build(this.getAPI().getBaseURL(), this.getID());
         BoxJSONRequest request = new BoxJSONRequest(this.getAPI(), url, "PUT");
+        request = this.addETagHeader(request, "If-Match");
 
         JsonObject updateInfo = new JsonObject();
         updateInfo.add("name", newName);
 
         request.setBody(updateInfo.toString());
-        BoxAPIResponse response = request.send();
-        response.disconnect();
+        BoxJSONResponse response = (BoxJSONResponse) request.send();
+        JsonObject responseJSON = JsonObject.readFrom(response.getJSON());
+        this.setEtag(responseJSON.get("etag").asString());
     }
 
     @Override
     public BoxFile.Info getInfo() {
-        URL url = FILE_URL_TEMPLATE.build(this.getAPI().getBaseURL(), this.getID());
-        BoxAPIRequest request = new BoxAPIRequest(this.getAPI(), url, "GET");
-        BoxJSONResponse response = (BoxJSONResponse) request.send();
-        return new Info(response.getJSON());
+        return this.getInfo(null);
     }
 
     @Override
     public BoxFile.Info getInfo(String... fields) {
-        String queryString = new QueryStringBuilder().appendParam("fields", fields).toString();
-        URL url = FILE_URL_TEMPLATE.buildWithQuery(this.getAPI().getBaseURL(), queryString, this.getID());
+        QueryStringBuilder queryStringBuilder = new QueryStringBuilder();
+
+        if (fields != null) {
+            queryStringBuilder.appendParam("fields", fields);
+        }
+
+        URL url = FILE_URL_TEMPLATE.buildWithQuery(
+                this.getAPI().getBaseURL(), queryStringBuilder.toString(), this.getID()
+        );
 
         BoxAPIRequest request = new BoxAPIRequest(this.getAPI(), url, "GET");
         BoxJSONResponse response = (BoxJSONResponse) request.send();
-        return new Info(response.getJSON());
+        String responseJSONString = response.getJSON();
+
+        // Only update etag if a local etag has not been set.
+        if (this.getLocalEtag() == null) {
+            JsonObject responseJSON = JsonObject.readFrom(responseJSONString);
+            this.setEtag(responseJSON.get("etag").asString());
+        }
+
+        return new Info(responseJSONString);
     }
 
     /**
@@ -369,10 +396,12 @@ public class BoxFile extends BoxItem {
     public void updateInfo(BoxFile.Info info) {
         URL url = FILE_URL_TEMPLATE.build(this.getAPI().getBaseURL(), this.getID());
         BoxJSONRequest request = new BoxJSONRequest(this.getAPI(), url, "PUT");
+        request = this.addETagHeader(request, "If-Match");
         request.setBody(info.getPendingChanges());
         BoxJSONResponse response = (BoxJSONResponse) request.send();
-        JsonObject jsonObject = JsonObject.readFrom(response.getJSON());
-        info.update(jsonObject);
+        JsonObject responseJSON = JsonObject.readFrom(response.getJSON());
+        this.setEtag(responseJSON.get("etag").asString());
+        info.update(responseJSON);
     }
 
     /**
@@ -452,6 +481,7 @@ public class BoxFile extends BoxItem {
     public void uploadVersion(InputStream fileContent, Date modified, long fileSize, ProgressListener listener) {
         URL uploadURL = CONTENT_URL_TEMPLATE.build(this.getAPI().getBaseUploadURL(), this.getID());
         BoxMultipartRequest request = new BoxMultipartRequest(getAPI(), uploadURL);
+        request = this.addETagHeader(request, "If-Match");
         if (fileSize > 0) {
             request.setFile(fileContent, "", fileSize);
         } else {
@@ -462,13 +492,19 @@ public class BoxFile extends BoxItem {
             request.putField("content_modified_at", modified);
         }
 
-        BoxAPIResponse response;
+        BoxJSONResponse response;
         if (listener == null) {
-            response = request.send();
+            response = (BoxJSONResponse) request.send();
         } else {
-            response = request.send(listener);
+            response = (BoxJSONResponse) request.send(listener);
         }
-        response.disconnect();
+
+        JsonObject collection = JsonObject.readFrom(response.getJSON());
+        JsonArray entries = collection.get("entries").asArray();
+        JsonObject fileInfoJSON = entries.get(0).asObject();
+        String etag = fileInfoJSON.get("etag").asString();
+
+        this.setEtag(etag);
     }
 
     /**
@@ -633,7 +669,6 @@ public class BoxFile extends BoxItem {
         request.setBody(requestJSON.toString());
 
         BoxJSONResponse response = (BoxJSONResponse) request.send();
-
         JsonObject responseJSON = JsonObject.readFrom(response.getJSON());
         JsonValue lockValue = responseJSON.get("lock");
         JsonObject lockJSON = JsonObject.readFrom(lockValue.toString());

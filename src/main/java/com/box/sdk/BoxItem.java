@@ -26,6 +26,21 @@ public abstract class BoxItem extends BoxResource {
 
     private static final URLTemplate SHARED_ITEM_URL_TEMPLATE = new URLTemplate("shared_items");
 
+    private String etag;
+    private boolean isLocalEtag = false;
+
+    /**
+     * Constructs a BoxItem for an item with a given ID and local etag.
+     * @param  api the API connection to be used by the item.
+     * @param  id  the ID of the item.
+     * @param localEtag user provided etag.
+     */
+    public BoxItem(BoxAPIConnection api, String id, String localEtag) {
+        super(api, id);
+        this.etag = localEtag;
+        this.isLocalEtag = true;
+    }
+
     /**
      * Constructs a BoxItem for an item with a given ID.
      * @param  api the API connection to be used by the item.
@@ -119,6 +134,49 @@ public abstract class BoxItem extends BoxResource {
      * @return        info about this item containing only the specified fields.
      */
     public abstract BoxItem.Info getInfo(String... fields);
+
+    /**
+     * Sets the etag for an item.
+     * @param etag the etag to use for requests.
+     */
+    protected void setEtag(String etag) {
+        this.etag = etag;
+    }
+
+    /**
+     * Sets the etag for an item.
+     * @param etag the etag to use for requests.
+     */
+    public void setLocalEtag(String etag) {
+        this.isLocalEtag = true;
+        this.setEtag(etag);
+    }
+
+    /**
+     * Returns the local etag if one exists, otherwise null.
+     * @return local etag if set, otherwise null.
+     */
+    protected String getLocalEtag() {
+        if (this.isLocalEtag) {
+            return this.etag;
+        } else {
+            return null;
+        }
+    }
+
+    /**
+     * Add an etag header to a request.
+     * @param request to add the etag to,
+     * @param headerType etag header type, If-Match or If-Not-Match.
+     * @param <T> BoxAPIRequest or an extension of it.
+     * @return the passed in request with etag header.
+     */
+    protected <T extends BoxAPIRequest> T addETagHeader(T request, String headerType) {
+        if (this.etag != null && !this.etag.isEmpty()) {
+            request.addHeader(headerType, this.etag);
+        }
+        return request;
+    }
 
     /**
      * Contains information about a BoxItem.

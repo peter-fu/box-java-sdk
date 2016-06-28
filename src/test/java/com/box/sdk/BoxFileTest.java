@@ -14,6 +14,8 @@ import java.text.SimpleDateFormat;
 import java.util.Calendar;
 import java.util.Collection;
 import java.util.Date;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 import static org.hamcrest.Matchers.*;
 import static org.junit.Assert.assertNotEquals;
@@ -30,6 +32,7 @@ import org.junit.Test;
 import org.junit.experimental.categories.Category;
 
 public class BoxFileTest {
+
     @Test
     @Category(IntegrationTest.class)
     public void uploadAndDownloadFileSucceeds() throws IOException {
@@ -247,6 +250,64 @@ public class BoxFileTest {
 
     @Test
     @Category(IntegrationTest.class)
+    public void callingRenameWithStaleEtagThrows412() {
+        Logger.getLogger("com.box.sdk").setLevel(Level.FINE);
+        BoxAPIConnection api = new BoxAPIConnection(TestConfig.getAccessToken());
+        BoxFolder rootFolder = BoxFolder.getRootFolder(api);
+        String originalFileName = "[callingRenameWithStaleEtagThrows12] Original Name.txt";
+        String newFileName = "[callingRenameWithStaleEtagThrows412] New Name.txt";
+        String fileContent = "Test file";
+        byte[] fileBytes = fileContent.getBytes(StandardCharsets.UTF_8);
+
+        InputStream uploadStream = new ByteArrayInputStream(fileBytes);
+        BoxFile.Info uploadedFileInfo = rootFolder.uploadFile(uploadStream, originalFileName);
+        BoxFile uploadedFile = uploadedFileInfo.getResource();
+
+        uploadedFile.getInfo();
+
+        uploadedFile.rename(newFileName);
+        uploadedFile.setLocalEtag("0");
+
+        boolean thrown = false;
+        try {
+            uploadedFile.rename(newFileName);
+        } catch (BoxAPIException e) {
+            if (e.getResponseCode() == 412) {
+                thrown = true;
+            }
+        }
+
+        assertThat(thrown, is(true));
+
+        uploadedFile.setLocalEtag("1");
+        uploadedFile.delete();
+    }
+
+    @Test
+    @Category(IntegrationTest.class)
+    public void shouldNotUpdateEtagOnReadWhenLocalEtagIsSet() {
+        Logger.getLogger("com.box.sdk").setLevel(Level.FINE);
+        BoxAPIConnection api = new BoxAPIConnection(TestConfig.getAccessToken());
+        BoxFolder rootFolder = BoxFolder.getRootFolder(api);
+        String originalFileName = "[shouldNotUpdateEtagOnReadWhenLocalEtagIsSet] Test.txt";
+        String fileContent = "Test file";
+        byte[] fileBytes = fileContent.getBytes(StandardCharsets.UTF_8);
+
+        InputStream uploadStream = new ByteArrayInputStream(fileBytes);
+        BoxFile.Info uploadedFileInfo = rootFolder.uploadFile(uploadStream, originalFileName);
+        BoxFile uploadedFile = uploadedFileInfo.getResource();
+
+        BoxFile localEtagFile = new BoxFile(api, uploadedFile.getID(), "1");
+
+        localEtagFile.getInfo();
+
+        assertThat(localEtagFile.getLocalEtag(), equalTo("1"));
+
+        uploadedFile.delete();
+    }
+
+    @Test
+    @Category(IntegrationTest.class)
     public void deleteVersionSucceeds() {
         BoxAPIConnection api = new BoxAPIConnection(TestConfig.getAccessToken());
         BoxFolder rootFolder = BoxFolder.getRootFolder(api);
@@ -318,6 +379,7 @@ public class BoxFileTest {
         String downloadedContent = downloadStream.toString(StandardCharsets.UTF_8.name());
         assertThat(downloadedContent, equalTo(version1Content));
 
+        uploadedFile.getInfo();
         uploadedFile.delete();
     }
 

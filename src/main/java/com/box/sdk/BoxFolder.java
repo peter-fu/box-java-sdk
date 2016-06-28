@@ -156,20 +156,34 @@ public class BoxFolder extends BoxItem implements Iterable<BoxItem.Info> {
 
     @Override
     public BoxFolder.Info getInfo() {
-        URL url = FOLDER_INFO_URL_TEMPLATE.build(this.getAPI().getBaseURL(), this.getID());
-        BoxAPIRequest request = new BoxAPIRequest(this.getAPI(), url, "GET");
-        BoxJSONResponse response = (BoxJSONResponse) request.send();
-        return new Info(response.getJSON());
+        return this.getInfo(null);
     }
 
     @Override
     public BoxFolder.Info getInfo(String... fields) {
-        String queryString = new QueryStringBuilder().appendParam("fields", fields).toString();
-        URL url = FOLDER_INFO_URL_TEMPLATE.buildWithQuery(this.getAPI().getBaseURL(), queryString, this.getID());
+        QueryStringBuilder queryStringBuilder = new QueryStringBuilder();
+
+        if (fields != null) {
+            queryStringBuilder.appendParam("fields", fields);
+        }
+
+        URL url = FOLDER_INFO_URL_TEMPLATE.buildWithQuery(
+                this.getAPI().getBaseURL(), queryStringBuilder.toString(), this.getID()
+        );
 
         BoxAPIRequest request = new BoxAPIRequest(this.getAPI(), url, "GET");
         BoxJSONResponse response = (BoxJSONResponse) request.send();
-        return new Info(response.getJSON());
+        String responseJSONString = response.getJSON();
+
+        // Only update etag if a local etag has not been set.
+        if (this.getLocalEtag() == null) {
+            JsonObject responseJSON = JsonObject.readFrom(responseJSONString);
+            JsonValue etag = responseJSON.get("etag");
+            // etag is null for root folder.
+            this.setEtag(etag.isString() ? etag.asString() : null);
+        }
+
+        return new Info(responseJSONString);
     }
 
     /**
@@ -179,10 +193,12 @@ public class BoxFolder extends BoxItem implements Iterable<BoxItem.Info> {
     public void updateInfo(BoxFolder.Info info) {
         URL url = FOLDER_INFO_URL_TEMPLATE.build(this.getAPI().getBaseURL(), this.getID());
         BoxJSONRequest request = new BoxJSONRequest(this.getAPI(), url, "PUT");
+        request = this.addETagHeader(request, "If-Match");
         request.setBody(info.getPendingChanges());
         BoxJSONResponse response = (BoxJSONResponse) request.send();
-        JsonObject jsonObject = JsonObject.readFrom(response.getJSON());
-        info.update(jsonObject);
+        JsonObject responseJSON = JsonObject.readFrom(response.getJSON());
+        this.setEtag(responseJSON.get("etag").asString());
+        info.update(responseJSON);
     }
 
     @Override
@@ -254,6 +270,7 @@ public class BoxFolder extends BoxItem implements Iterable<BoxItem.Info> {
     public BoxItem.Info move(BoxFolder destination, String newName) {
         URL url = FOLDER_INFO_URL_TEMPLATE.build(this.getAPI().getBaseURL(), this.getID());
         BoxJSONRequest request = new BoxJSONRequest(this.getAPI(), url, "PUT");
+        request = this.addETagHeader(request, "If-Match");
 
         JsonObject parent = new JsonObject();
         parent.add("id", destination.getID());
@@ -377,12 +394,16 @@ public class BoxFolder extends BoxItem implements Iterable<BoxItem.Info> {
         } else {
             response = (BoxJSONResponse) request.send(uploadParams.getProgressListener());
         }
+
         JsonObject collection = JsonObject.readFrom(response.getJSON());
         JsonArray entries = collection.get("entries").asArray();
         JsonObject fileInfoJSON = entries.get(0).asObject();
         String uploadedFileID = fileInfoJSON.get("id").asString();
+        String etag = fileInfoJSON.get("etag").asString();
 
         BoxFile uploadedFile = new BoxFile(getAPI(), uploadedFileID);
+        uploadedFile.setEtag(etag);
+
         return uploadedFile.new Info(fileInfoJSON);
     }
 
